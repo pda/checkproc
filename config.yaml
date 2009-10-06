@@ -1,0 +1,29 @@
+:email:
+  sender: tech@example.org
+  recipient: tech@example.org
+
+MySQL:
+  user: mysql
+  proc: /usr/local/mysql/bin/mysqld
+  command: cd /usr/local/mysql; ./bin/mysqld_safe --user=mysql &
+
+PostgreSQL:
+  user: postgres
+  proc: postmaster -D /usr/local/pgsql/data
+  command: /bin/su - postgres -c "/usr/local/pgsql/bin/pg_ctl start -D /usr/local/pgsql/data -l /var/log/pgsql.log"
+
+Camtech:
+  user: camtech
+  proc: V6MerchantServer
+  command: /bin/su camtech -c '/home/camtech/V6MerchantServer/bin/TcpDaemon 6001 &'
+
+#Typo (pda):
+#  user: pda
+#  proc: paul.annesley.cc/public/dispatch.fcgi
+#  http_host: paul.annesley.cc
+#  command: /home/pda/rails/typoctl start
+
+SpamAssassin:
+  user: root
+  proc: /usr/bin/spamd
+  command: /etc/rc.d/rc.spamd start

@@ -1,0 +1,174 @@
+#!/usr/bin/ruby -w
+
+#
+# checkproc - 19 April 2006 - Paul Annesley
+#
+# to be run peridically from crontab
+# reads configuration file from YAML file
+# checks for running processes and/or successful HTTP response
+# sends email alerts and attempts to restart stopped processes
+#
+# --help for usage information
+# please excuse any poor coding - first attempt at ruby
+#
+
+require 'ostruct'
+require 'optparse'
+require 'yaml'
+
+$problem = {}
+$options = OpenStruct::new(
+  "verbose" => false,
+  "email" => true,
+  "restart" => true,
+  "config" => "config.yml"
+)
+
+class MyMessages
+  def initialize
+    @messages = []
+  end
+  def add(string = '')
+    vputs string
+    @messages << string
+  end
+  def line(length=40)
+    add "-"*length
+  end
+  def to_s
+    @messages.join("\n")
+  end
+  def vputs(string = nil)
+    puts string if $options.verbose
+  end
+  def any?
+    @messages.size > 0
+  end
+end
+
+class MyOptionParser < OptionParser
+  def initialize
+    super
+    self.on("-c", "--config FILE", "Path to config file") { |val| $options.config = val }
+    self.on("-h", "--help", "Usage Information") { puts self; exit }
+    self.on("-v", "--verbose", "Verbose output to STDOUT") { $options.verbose = true }
+    self.on("-E", "--no-email", "Disable email alerts") { $options.email = false }
+    self.on("-R", "--no-restart", "Disable restart commands") { $options.restart = false }
+    self.parse(ARGV)
+  end
+end
+
+class SendEmail
+  def initialize(server='localhost')
+    require 'net/smtp'
+    @netsmtp = Net::SMTP::new(server)
+  end
+  def send_message(sender, recipient, subject, message)
+    re_email = /[a-zA-Z][\w\.-]*[a-zA-Z0-9]@[a-zA-Z0-9][\w\.-]*[a-zA-Z0-9]\.[a-zA-Z][a-zA-Z\.]*[a-zA-Z]/
+    raise "Invalid sender address" unless sender.match(re_email)
+    raise "Invalid recipient address" unless recipient.match(re_email)
+    smtp_message = "From: #{sender}\n"
+    smtp_message << "To: #{recipient}\n"
+    smtp_message << "Subject: #{subject}\n\n"
+    smtp_message << message
+    @netsmtp.start
+    @netsmtp.send_mail(smtp_message, sender, recipient)
+    @netsmtp.finish
+  end
+end
+
+class CheckPS
+  def initialize
+    @ps = `ps aux`
+  end
+  def running?(string, user)
+    @ps.split("\n").grep(/^#{user || ".*"}\W.+#{string}/).size > 0
+  end
+end
+
+class CheckHTTP
+  attr_reader :error
+  def initialize(http_host, http_port=nil, http_path=nil)
+    require 'net/http'
+    @http_host = http_host
+    @http_port = http_port || 80
+    @http_path = http_path || '/'
+  end
+  def ok?
+    begin
+      response = Net::HTTP::new(@http_host, @http_port).head(@http_path)
+      if response.code != 200
+        raise "#{response.code} #{response.message}"
+      end
+    rescue StandardError => e
+      @error = e.message
+      false
+    else
+      true
+    end
+  end
+  def url
+    url = "http://"
+    url << @http_host
+    url << @http_port if @http_port != 80
+    url << @http_path
+  end
+end
+
+option_parse = MyOptionParser::new
+messages = MyMessages::new
+
+begin
+  config = YAML::load_file($options.config)
+rescue
+  puts "Config file not found: #{$options.config}"
+  exit 1
+end
+
+ps = CheckPS::new
+
+config.each do |application, params|
+  next unless application.class == String
+
+  if params['proc']
+    (process, user) = params.values_at('proc', 'user')
+    unless ps.running?(process, user)
+      $problem[application] = true
+      messages.add <<MESSAGE
+#{application} not running!
+  Searched for: #{process}
+  Running as user: #{user || "(any)"}
+MESSAGE
+    end
+  end
+
+  if params['http_host']
+    http_params = params.values_at('http_host', 'http_port', 'http_path')
+    http = CheckHTTP::new(*http_params)
+    unless http.ok?
+      $problem[application] = true
+      messages.add <<MESSAGE
+#{application} HTTP Error:
+  Checking #{http.url}
+  Error: #{http.error}
+MESSAGE
+    end
+  end
+
+  if $problem[application]
+    if params['command'] && $options.restart
+      success = system(params['command'] + " >/dev/null 2>&1")
+      messages.add "Command #{success ? 'executed' : 'failed'}: #{params['command']}"
+    else
+      messages.add "No action taken"
+    end
+    messages.line
+  end
+
+end
+
+(sender, recipient) = config[:email].values_at('sender', 'recipient')
+if $options.email && messages.any? && sender && recipient
+  smtp = SendEmail::new
+  smtp.send_message(sender, recipient, 'Process Monitor', messages.to_s)
+end
